@@ -1,8 +1,7 @@
 painterly-sky
-Derived from the "meadow" hero scene of Ardia (https://github.com/mantrakp04/ardia),
+Contains the "meadow" hero scene of Ardia (https://github.com/mantrakp04/ardia),
 Copyright 2026 Mantra Patel, licensed under the Apache License, Version 2.0.
 
-This project is a re-implementation/adaptation in a single dependency-free JavaScript file.
-Changes: vendored the meadow scene source; replaced boot.ts with a small entry (src/index.ts) and a bundle; added a standalone demo page. The earlier from-scratch approximation lives in lite/.
-reduced grass/particle systems), local-clock time of day, and other modifications.
-Constants, colour keyframes and the rendering pipeline structure follow the original.
+Changes: vendored the meadow scene sources into src/meadow/ (boot.ts removed and replaced by
+src/index.ts), added a bundle (dist/) and a standalone demo page. lite/ holds an earlier
+from-scratch approximation of the same effect.
