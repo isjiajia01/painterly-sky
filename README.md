@@ -1,27 +1,27 @@
 # painterly-sky
-Procedural, painted-looking gradient backgrounds in ~200 lines of WebGL2. Zero dependencies, no images.
 
+A painted, procedural meadow background in WebGL2 — the "Touch grass" hero from [Ardia](https://github.com/mantrakp04/ardia), packaged as a standalone, dependency-free module.
+
+    bun build src/index.ts --outfile dist/painterly-sky.js --target browser --format esm
     python3 -m http.server   # open http://localhost:8000
-    import {createPainterlySky, SUNRISE} from './painterly-sky.js'
-    createPainterlySky(canvas, {...SUNRISE, sun:[.5,.4], top:[.2,.3,.6]})
 
-How it works: scene (banded fbm-wobbled gradient) → flow (structure tensor) → anisotropic Kuwahara → jittered brush dabs lit as a height field (normal + specular + canvas grain + dither). Static layers render once; only the last pass re-runs on pointer move.
+```html
+<section data-meadow>
+  <canvas data-meadow-canvas></canvas>
+  <h1 class="hero-title"><span class="line"><span>Touch</span></span> <span class="line"><span>grass.</span></span></h1>
+  <p class="lede">…</p>
+</section>
+<script type="module">
+  import { createPainterlySky } from './dist/painterly-sky.js';
+  createPainterlySky({ hero: document.querySelector('[data-meadow]') });
+</script>
+```
 
+The scene keeps text readable by sampling the rendered pixels under `.hero-title .line > span`, `.lede`, `.cta-row .source`, `.note` and setting `data-tone="light|dark"` and `--halo` on them (see `index.html` for the CSS).
 
-## Features
-- Banded, fbm-wobbled sky gradient + stepped sun glow, hills, grass
-- Anisotropic Kuwahara paint filter driven by a structure-tensor flow field
-- Brush-dab relief lighting (normal + specular), canvas grain, dither
-- 2.85s cosine-eased sunrise intro; pointer smear; fireflies; click for petal burst
-- Auto text contrast: `toneTargets:[el,...]` sets `data-tone="light|dark"` from the pixels under each element
-- Options: `sunrise:false`, `particles:false`; honours `prefers-reduced-motion`
-
-Also: raymarched heightfield terrain with baked horizon/AO, 30k wind-blown grass blades bent by the pointer, ground mist, lit clouds, 24h day/night cycle (`timeOfDay`, `cycle`), moon/stars, smear texture, auto text tone + halo.
-
-## Time of day
-By default the scene follows the visitor's **local clock** (`timeOfDay: 'auto'`, refreshed every 30 s). Pass a number 0..1 to pin it (e.g. `0.2` dawn, `0.5` noon, `0.9` dusk), or `cycle: seconds` for a looping day. In the demo page use `?t=0.9`.
+- `src/meadow/` — Ardia's meadow source (TypeScript), vendored unchanged except `boot.ts`, replaced by `src/index.ts`.
+- `dist/painterly-sky.js` — built bundle (117 KB).
+- `lite/painterly-sky-lite.js` — my earlier ~500-line from-scratch approximation, kept for reference.
 
 ## Attribution & license
-Derived from the hero "meadow" scene of [Ardia](https://github.com/mantrakp04/ardia) (© 2026 Mantra Patel, Apache-2.0).
-Pipeline structure, colour keyframes and many constants follow the original source; this repo re-implements and
-simplifies it as a standalone module. Licensed under **Apache License 2.0** (see `LICENSE`, `NOTICE`).
+The scene is Ardia's work: © 2026 Mantra Patel, [Apache-2.0](LICENSE). See `NOTICE` for what was changed.
