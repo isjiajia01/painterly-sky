@@ -4,7 +4,8 @@
 main{position:relative;z-index:1;padding:12vh 5vw;pointer-events:none}
 h1{margin:0;font:900 14vw/0.85 Impact,'Arial Black',sans-serif;transition:color .6s}
 p{font:500 1.4rem/1.4 system-ui;max-width:30ch;margin:2rem 0;transition:color .6s}
-[data-tone=light]{color:#15130f}[data-tone=dark]{color:#fff8e8}
+[data-tone]{--halo:0;text-shadow:0 0 6px rgb(var(--halo-rgb) / calc(var(--halo)*.8)),0 0 18px rgb(var(--halo-rgb) / calc(var(--halo)*.6))}
+[data-tone=light]{color:#15130f;--halo-rgb:255 248 232}[data-tone=dark]{color:#fff8e8;--halo-rgb:21 19 15}
 </style>
 <canvas id=c></canvas><main><h1 id=t>TOUCH<br>GRASS.</h1><p id=l>Procedural painted gradients in WebGL2. Click anywhere. Move the mouse.</p></main>
 <script type=module>import {createPainterlySky} from './painterly-sky.js';
