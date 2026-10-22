@@ -21,6 +21,12 @@ const float TZN=1.,TZF=16000.,TW0=6.,TSLOPE=1.05,HMIN=-60.,HRANGE=2300.;
 vec2 terrainWorld(vec2 uv){float z=TZN*pow(TZF/TZN,uv.y);return vec2((uv.x*2.-1.)*(TW0+z*TSLOPE),z);}
 vec2 terrainUv(vec2 p){float z=max(p.y,TZN);return vec2(p.x/(TW0+z*TSLOPE)*.5+.5,log(z/TZN)/log(TZF/TZN));}
 `;
+const TERRAIN_SAMPLE = `float dec(vec4 t){return (t.r*65280.+t.g*255.)/65535.*HRANGE+HMIN;}
+float hAt(vec2 p){vec2 uv=clamp(terrainUv(p),0.,1.);vec2 st=uv*uBake-.5;ivec2 b=ivec2(floor(st)),mx=ivec2(uBake)-1;vec2 f=fract(st);
+ float a=dec(texelFetch(uH,clamp(b,ivec2(0),mx),0)),bb=dec(texelFetch(uH,clamp(b+ivec2(1,0),ivec2(0),mx),0));
+ float c=dec(texelFetch(uH,clamp(b+ivec2(0,1),ivec2(0),mx),0)),d=dec(texelFetch(uH,clamp(b+ivec2(1,1),ivec2(0),mx),0));
+ return mix(mix(a,bb,f.x),mix(c,d,f.x),f.y);}
+`;
 const BAKE = COMMON + `
 uniform vec2 uBake; layout(location=0) out vec4 oH; layout(location=1) out vec4 oM;
 vec3 noised(vec2 x){vec2 c=floor(x),f=fract(x),u=f*f*f*(f*(f*6.-15.)+10.),du=30.*f*f*(f*(f-2.)+1.);
@@ -57,11 +63,7 @@ uniform sampler2D uH,uM; uniform vec2 uBake;
 uniform vec3 uHorizon,uLow,uMid,uTop,uGlow,uKey,uSunDir,uMoonDir;
 in vec2 vUv; out vec4 o;
 const float BANDS=7.,CAMH=1.7;
-float dec(vec4 t){return (t.r*65280.+t.g*255.)/65535.*HRANGE+HMIN;}
-float hAt(vec2 p){vec2 uv=clamp(terrainUv(p),0.,1.);vec2 st=uv*uBake-.5;ivec2 b=ivec2(floor(st)),mx=ivec2(uBake)-1;vec2 f=fract(st);
- float a=dec(texelFetch(uH,clamp(b,ivec2(0),mx),0)),bb=dec(texelFetch(uH,clamp(b+ivec2(1,0),ivec2(0),mx),0));
- float c=dec(texelFetch(uH,clamp(b+ivec2(0,1),ivec2(0),mx),0)),d=dec(texelFetch(uH,clamp(b+ivec2(1,1),ivec2(0),mx),0));
- return mix(mix(a,bb,f.x),mix(c,d,f.x),f.y);}
+${TERRAIN_SAMPLE}
 vec3 skyGrad(float h){vec3 c=mix(uHorizon,uLow,smoothstep(0.,.16,h));c=mix(c,uMid,smoothstep(.12,.55,h));return mix(c,uTop,smoothstep(.5,1.,h));}
 float sunGlow(vec3 d){float mu=max(dot(d,uSunDir),0.);float nh=exp(-max(d.y,0.)*9.);
  return pow(mu,4.)*(.4+.6*nh)+pow(mu,28.)*1.4+pow(mu,380.)*2.+nh*(.3+.7*mu)*.45;}
@@ -72,7 +74,7 @@ void main(){
  vec2 nd=vUv*2.-1.;
  vec3 fw=vec3(0,sin(uPitch),cos(uPitch)),up=vec3(0,cos(uPitch),-sin(uPitch));
  vec3 rd=normalize(fw+nd.x*uTanHalf*uAspect*vec3(1,0,0)+nd.y*uTanHalf*up);
- vec3 col; float region=.1;
+ vec3 col; float region=.1; gl_FragDepth=1.;
  float h=clamp(max(rd.y,0.)/.6,0.,1.), mu=max(dot(rd,uSunDir),0.);
  vec2 plane=rd.xz/(rd.y+.07);
  // ---- sky
@@ -105,6 +107,8 @@ void main(){
   if(hit){
    for(int i=0;i<6;i++){float m=.5*(t+tp);vec3 p=ro+rd*m;if(p.y<hAt(p.xz))t=m;else tp=m;}
    vec3 P=ro+rd*t; float e=max(.06,t*.004);
+   // Match grass perspective depth: near .1, far 18000.
+   float viewZ=t*dot(rd,fw); gl_FragDepth=18000./17999.9-1800./(17999.9*viewZ);
    vec3 n=normalize(vec3(hAt(P.xz-vec2(e,0))-hAt(P.xz+vec2(e,0)),2.*e,hAt(P.xz-vec2(0,e))-hAt(P.xz+vec2(0,e))));
    vec3 w=texture(uM,clamp(terrainUv(P.xz),0.,1.)).rgb;
    float nz=fbm(P.xz*.7,3), nz2=fbm(P.xz*.04,3);
@@ -123,6 +127,50 @@ void main(){
   }
  }
  o=vec4(col,region);
+}`;
+// ---- segmented grass ribbons: procedural instances share the terrain camera and depth range.
+const GRASS_VS = COMMON + `
+uniform sampler2D uH,uBrushTex; uniform vec2 uBake,uWindDir,uRes;
+uniform float uTime,uWind,uAspect,uTanHalf,uPitch;
+out vec3 vWorld,vTint,vNormal; out float vAlong;
+${TERRAIN_SAMPLE}
+void main(){
+ vec2 id=vec2(gl_InstanceID%250,gl_InstanceID/250);
+ vec2 cell=(id+vec2(hash12(id+3.7),hash12(id+29.)))/vec2(250,120);
+ float z=1./mix(1./2.2,1./95.,cell.y), seed=hash12(id+11.);
+ vec2 root=vec2((cell.x*2.-1.)*(1.+z*uAspect*uTanHalf*1.16),z);
+ vec3 base=vec3(root.x,hAt(root)-.025,root.y);
+ vec3 fw=vec3(0,sin(uPitch),cos(uPitch)),up=vec3(0,cos(uPitch),-sin(uPitch));
+ vec3 eye=base-vec3(0,1.7,0); float rz=dot(eye,fw);
+ vec2 screen=vec2(eye.x/(uAspect*uTanHalf),dot(eye,up)/uTanHalf)/rz*.5+.5;
+ vec2 brush=vec2(0); if(all(greaterThanEqual(screen,vec2(0)))&&all(lessThanEqual(screen,vec2(1)))) brush=texture(uBrushTex,screen).xy;
+ float gust=.45+.3*vnoise(root*.22-uWindDir*uTime*.8)+.12*sin(uTime*2.7+z*.9+seed*20.);
+ vec2 bend=uWindDir*uWind*gust+vec2(sin(seed*60.),cos(seed*60.))*.15+brush*2.1;
+ float angle=min(length(bend),2.25), along=float(gl_VertexID/2)/6., side=float(gl_VertexID%2)*2.-1.;
+ vec2 dir=bend/max(length(bend),.001); float height=mix(.24,.66,seed)*(.85+.25*vnoise(root*1.5));
+ float arc=angle*along, safe=max(angle,.001);
+ vec3 spine=base+height*vec3(dir.x*(1.-cos(arc))/safe,sin(arc)/safe,dir.y*(1.-cos(arc))/safe);
+ vec3 across=normalize(vec3(z,0,-root.x));
+ float width=max(mix(.013,.029,hash12(id+41.)),rz*uTanHalf/uRes.y*.85);
+ vec3 pos=spine+across*side*width*pow(1.-along,.7);
+ vec3 tangent=vec3(dir.x*sin(arc),cos(arc),dir.y*sin(arc));
+ vNormal=normalize(cross(across,tangent)); vWorld=pos; vAlong=along;
+ float meadowMix=.5+.5*fbm(root*.04,3);
+ vTint=mix(vec3(.36,.44,.15),vec3(.66,.66,.28),meadowMix)*mix(.78,1.08,seed);
+ eye=pos-vec3(0,1.7,0); float vz=dot(eye,fw);
+ gl_Position=vec4(eye.x/(uTanHalf*uAspect),dot(eye,up)/uTanHalf,(18000.1*vz-3600.)/17999.9,vz);
+}`;
+const GRASS_FS = COMMON + `
+uniform vec3 uMid,uHorizon,uLow,uKey,uSunDir,uMoonDir; uniform float uAmbient,uNight,uHaze;
+in vec3 vWorld,vTint,vNormal; in float vAlong; out vec4 o;
+void main(){
+ vec3 L=normalize(mix(uSunDir,uMoonDir,smoothstep(.4,.7,uNight)));
+ float lam=.1+.9*abs(dot(normalize(vNormal),L));
+ vec3 amb=pow(uMid,vec3(2.2))*.9+pow(uHorizon,vec3(2.2))*.175;
+ vec3 lit=pow(vTint,vec3(2.2))*(amb*.8*uAmbient*mix(1.,.7,uNight)+uKey*.5*lam)*mix(.65,1.12,vAlong);
+ vec3 c=pow(lit/(1.+lit*.25),vec3(1./2.2));
+ c=mix(c,mix(uHorizon,uLow,.2)*(1.-uNight*.4),1.-exp(-length(vWorld-vec3(0,1.7,0))*uHaze));
+ o=vec4(c,.9);
 }`;
 const FLOW = COMMON + `
 uniform sampler2D uScene; uniform vec2 uTexel; in vec2 vUv; out vec4 o;
@@ -247,6 +295,27 @@ class Smear {
   }
 }
 
+// ---- grass brush: XY displacement and ZW velocity, in a screen-space spring grid.
+class BrushField {
+  constructor() { this.c = 84; this.r = 30; this.field = new Float32Array(this.c * this.r * 4); this.idle = 0; }
+  get settled() { return this.idle > 8; }
+  step(dt, ptr, W, H) {
+    const f = this.field, steps = Math.max(1, Math.ceil(dt * 60)), h = dt / steps; let energy = 0;
+    for (let step = 0; step < steps; step++) for (let j = 0; j < this.r; j++) for (let i = 0; i < this.c; i++) {
+      const n = (j * this.c + i) * 4, dx = (i + .5) / this.c * W - ptr.x, dy = (j + .5) / this.r * H - (H - ptr.y);
+      const d = Math.hypot(dx, dy), weight = ptr.active ? sm3(Math.max(0, 1 - d / 105)) : 0;
+      const strength = weight * 1.35 / Math.max(d, 12);
+      for (let k = 0; k < 2; k++) {
+        const target = (k ? dy : dx) * strength;
+        f[n + 2 + k] += ((target - f[n + k]) * 62 - f[n + 2 + k] * 13) * h;
+        f[n + k] = Math.max(-1.5, Math.min(1.5, f[n + k] + f[n + 2 + k] * h));
+        energy = Math.max(energy, Math.abs(f[n + k]), Math.abs(f[n + 2 + k]) * .1);
+      }
+    }
+    this.idle = energy < .0005 ? this.idle + 1 : 0;
+  }
+}
+
 export const SUNRISE = { timeOfDay: .2 };
 
 export function createPainterlySky(canvas, opts = {}) {
@@ -255,12 +324,12 @@ export function createPainterlySky(canvas, opts = {}) {
   if (!gl) throw new Error('WebGL2 required');
   const sh = (t, s) => { const x = gl.createShader(t); gl.shaderSource(x, s); gl.compileShader(x);
     if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(x)); return x; };
-  const prog = fs => { const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, VS));
+  const prog = (fs, vs = VS) => { const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, vs));
     gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p);
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
     const u = {}; for (let i = 0, n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS); i < n; i++) {
       const nm = gl.getActiveUniform(p, i).name; u[nm] = gl.getUniformLocation(p, nm); } return { p, u }; };
-  const pB = prog(BAKE), pS = prog(SCENE), pF = prog(FLOW), pK = prog(KUWA), pD = prog(DABS);
+  const pB = prog(BAKE), pS = prog(SCENE), pF = prog(FLOW), pK = prog(KUWA), pD = prog(DABS), pG = prog(GRASS_FS, GRASS_VS);
   gl.bindVertexArray(gl.createVertexArray());
   const tex = (w, h, ifmt, fmt, type, filter) => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
     gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, w, h, 0, fmt, type, null);
@@ -277,10 +346,12 @@ export function createPainterlySky(canvas, opts = {}) {
   const hTex = tex(BW, BH, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST), mTex = tex(BW, BH, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR);
   { const f = fbo(hTex, mTex); gl.useProgram(pB.p); gl.viewport(0, 0, BW, BH); gl.uniform2f(pB.u.uBake, BW, BH); draw(); gl.deleteFramebuffer(f); }
 
+  const brush = new BrushField(), brushTex = tex(brush.c, brush.r, gl.RGBA32F, gl.RGBA, gl.FLOAT, gl.NEAREST);
+
   // pointer-smear texture
   const smear = new Smear(); const smTex = tex(smear.c, smear.r, gl.RG16F, gl.RG, gl.HALF_FLOAT, gl.LINEAR);
 
-  let W = 0, H = 0, dpr = 1, T = {}, dirty = true, mouse = { x: -9999, y: -9999, active: false }, raf = 0, last = 0;
+  let depth = null, W = 0, H = 0, dpr = 1, T = {}, dirty = true, mouse = { x: -9999, y: -9999, active: false }, raf = 0, last = 0;
   const t0 = performance.now(), introMs = P.sunrise === false ? 0 : 2850;
   const ease = x => (1 - Math.cos(Math.PI * Math.min(1, Math.max(0, x)))) / 2;
   const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -292,7 +363,10 @@ export function createPainterlySky(canvas, opts = {}) {
     dpr = Math.min(devicePixelRatio || 1, 1.6, Math.sqrt((P.pixelBudget || 2.4e6) / Math.max(1, cw * ch)));
     W = canvas.width = Math.max(2, Math.round(cw * dpr)); H = canvas.height = Math.max(2, Math.round(ch * dpr));
     for (const k in T) { gl.deleteTexture(T[k].t); gl.deleteFramebuffer(T[k].f); }
-    T = { scene: mkT(), flow: mkT(), paint: mkT() }; fx?.resize(cw, ch); dirty = true; toneDirty = true; };
+    if (depth) gl.deleteRenderbuffer(depth);
+    T = { scene: mkT(), flow: mkT(), paint: mkT() };
+    depth = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, depth); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, W, H);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, T.scene.f); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth); fx?.resize(cw, ch); dirty = true; toneDirty = true; };
 
   const phaseAt = now => {
     const target = P.timeOfDay, e = introMs ? ease((now - t0 - 300) / introMs) : 1;
@@ -308,13 +382,26 @@ export function createPainterlySky(canvas, opts = {}) {
     const { r, busy } = phaseAt(now), S = dayState(r);
     if (busy) { dirty = true; toneDirty = true; }
     const sunPx = project(S.sunDir), moonPx = project(S.moonDir);
+    brush.step(dt, mouse, W / dpr, H / dpr);
+    const wind = !reduced && P.wind !== 0;
+    if (wind || !brush.settled) dirty = true;
     if (dirty) {
+      gl.bindTexture(gl.TEXTURE_2D, brushTex); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, brush.c, brush.r, gl.RGBA, gl.FLOAT, brush.field);
       let u = (gl.useProgram(pS.p), gl.bindFramebuffer(gl.FRAMEBUFFER, T.scene.f), gl.viewport(0, 0, W, H), pS.u);
       gl.uniform2f(u.uRes, W, H); gl.uniform1f(u.uTime, time); gl.uniform1f(u.uAspect, W / H); gl.uniform1f(u.uTanHalf, tanHalf); gl.uniform1f(u.uPitch, pitch);
       gl.uniform1f(u.uNight, S.night); gl.uniform1f(u.uAmbient, S.amb); gl.uniform1f(u.uHaze, S.haze); gl.uniform2f(u.uBake, BW, BH);
       gl.uniform3fv(u.uHorizon, S.horizon); gl.uniform3fv(u.uLow, S.low); gl.uniform3fv(u.uMid, S.mid); gl.uniform3fv(u.uTop, S.top);
       gl.uniform3fv(u.uGlow, S.glow); gl.uniform3fv(u.uKey, S.key); gl.uniform3fv(u.uSunDir, S.sunDir); gl.uniform3fv(u.uMoonDir, S.moonDir);
+      gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.ALWAYS); gl.clear(gl.DEPTH_BUFFER_BIT);
       bind(u, 0, hTex, 'uH'); bind(u, 1, mTex, 'uM'); draw();
+      gl.useProgram(pG.p); u = pG.u; gl.depthFunc(gl.LESS);
+      bind(u, 0, hTex, 'uH'); bind(u, 1, brushTex, 'uBrushTex'); gl.uniform2f(u.uBake, BW, BH);
+      gl.uniform2f(u.uRes, W, H); gl.uniform1f(u.uTime, time); gl.uniform1f(u.uAspect, W / H); gl.uniform1f(u.uTanHalf, tanHalf); gl.uniform1f(u.uPitch, pitch);
+      gl.uniform1f(u.uWind, wind ? (P.wind ?? .8) : 0); const wd = P.windDir || [1, .32], wl = Math.hypot(...wd) || 1; gl.uniform2f(u.uWindDir, wd[0] / wl, wd[1] / wl);
+      gl.uniform1f(u.uNight, S.night); gl.uniform1f(u.uAmbient, S.amb); gl.uniform1f(u.uHaze, S.haze);
+      gl.uniform3fv(u.uMid, S.mid); gl.uniform3fv(u.uHorizon, S.horizon); gl.uniform3fv(u.uLow, S.low); gl.uniform3fv(u.uKey, S.key);
+      gl.uniform3fv(u.uSunDir, S.sunDir); gl.uniform3fv(u.uMoonDir, S.moonDir);
+      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 14, 30000); gl.disable(gl.DEPTH_TEST);
       gl.useProgram(pF.p); gl.bindFramebuffer(gl.FRAMEBUFFER, T.flow.f); u = pF.u; bind(u, 0, T.scene.t, 'uScene'); gl.uniform2f(u.uTexel, 1 / W, 1 / H); draw();
       gl.useProgram(pK.p); gl.bindFramebuffer(gl.FRAMEBUFFER, T.paint.f); u = pK.u; bind(u, 0, T.scene.t, 'uScene'); bind(u, 1, T.flow.t, 'uFlow');
       gl.uniform2f(u.uTexel, 1 / W, 1 / H); gl.uniform1f(u.uRadius, 5 * dpr); draw(); dirty = false;
@@ -335,7 +422,7 @@ export function createPainterlySky(canvas, opts = {}) {
     gl.uniform1f(u.uSunVis, sm3(Math.min(1, Math.max(0, (S.sunEl + .03) / .09)))); gl.uniform3fv(u.uGlowCol, S.glow); draw();
     if (tone && toneDirty && !busy) { tone.update(gl, canvas, W, H, dpr); toneDirty = false; }
     if (fx) fx.step(dt, [mouse.x, canvas.clientHeight - mouse.y], mouse.active ? 1 : 0, 1);
-    if (busy || fx || !smear.settled) raf = requestAnimationFrame(render);
+    if (busy || fx || wind || !brush.settled || !smear.settled) raf = requestAnimationFrame(render);
   };
   const kick = () => { if (!raf) raf = requestAnimationFrame(render); };
   const rel = e => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
@@ -346,7 +433,8 @@ export function createPainterlySky(canvas, opts = {}) {
   const ro = new ResizeObserver(() => { resize(); kick(); }); ro.observe(canvas);
   resize(); render();
   return { destroy() { ro.disconnect(); removeEventListener('pointermove', onMove); removeEventListener('pointerdown', onDown);
-    document.removeEventListener('pointerleave', onLeave); cancelAnimationFrame(raf); fx?.destroy(); },
+    document.removeEventListener('pointerleave', onLeave); cancelAnimationFrame(raf); fx?.destroy();
+    gl.deleteTexture(brushTex); gl.deleteRenderbuffer(depth); gl.deleteProgram(pG.p); },
     set timeOfDay(v) { P.timeOfDay = v; dirty = true; toneDirty = true; kick(); } };
 }
 
