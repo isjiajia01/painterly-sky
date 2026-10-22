@@ -373,7 +373,14 @@ class BrushField {
   }
 }
 
-export const SUNRISE = { timeOfDay: .2 };
+// local clock -> day phase (0 night, .06 dawn, .3 morning, .5 noon, .84 evening, .92 dusk, 1 night)
+const CLOCK = [[0, 0], [5, 0], [6, .06], [7.5, .14], [10, .3], [14, .58], [18, .84], [19.5, .92], [21, 1], [24, 1]];
+export function localPhase(d = new Date()) {
+  const h = d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600; let i = 0;
+  while (i < CLOCK.length - 2 && CLOCK[i + 1][0] <= h) i++;
+  const [h0, p0] = CLOCK[i], [h1, p1] = CLOCK[i + 1]; return p0 + (p1 - p0) * (h - h0) / (h1 - h0);
+}
+export const SUNRISE = { timeOfDay: 'auto' }; // 'auto' follows the visitor's local time; or a number 0..1
 
 export function createPainterlySky(canvas, opts = {}) {
   const P = { ...SUNRISE, ...opts };
@@ -431,7 +438,9 @@ export function createPainterlySky(canvas, opts = {}) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, T.scene.f); gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth); fx?.resize(cw, ch); dirty = true; toneDirty = true; };
 
   const phaseAt = now => {
-    const target = P.timeOfDay, e = introMs ? ease((now - t0 - 300) / introMs) : 1;
+    const auto = P.timeOfDay === 'auto', target = auto ? localPhase() : P.timeOfDay;
+    if (auto) { const k = Math.floor(now / 30000); if (k !== phaseAt.k) { phaseAt.k = k; dirty = true; toneDirty = true; } }
+    const e = introMs ? ease((now - t0 - 300) / introMs) : 1;
     let r = target * e; if (P.cycle) r = (target + Math.max(0, now - t0 - introMs) / 1000 / P.cycle) % 1; return { r, busy: e < 1 || !!P.cycle }; };
   const fov = rad(54), tanHalf = Math.tan(fov / 2), pitch = Math.atan(.4 * tanHalf);
   const project = d => { // direction -> css px (origin top-left) in canvas space

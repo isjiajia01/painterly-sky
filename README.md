@@ -17,3 +17,6 @@ Inspired by the technique observed on ardia.dev; all code here is original. MIT.
 - Options: `sunrise:false`, `particles:false`; honours `prefers-reduced-motion`
 
 Also: raymarched heightfield terrain with baked horizon/AO, 30k wind-blown grass blades bent by the pointer, ground mist, lit clouds, 24h day/night cycle (`timeOfDay`, `cycle`), moon/stars, smear texture, auto text tone + halo.
+
+## Time of day
+By default the scene follows the visitor's **local clock** (`timeOfDay: 'auto'`, refreshed every 30 s). Pass a number 0..1 to pin it (e.g. `0.2` dawn, `0.5` noon, `0.9` dusk), or `cycle: seconds` for a looping day. In the demo page use `?t=0.9`.
