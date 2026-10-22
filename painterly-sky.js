@@ -88,7 +88,7 @@ void main(){
  oAO=vec4(vec3(clamp(1.-occ*.14,.15,1.)),1);
 }`;
 const SCENE = COMMON + HEIGHT + HORIZON + `
-uniform vec2 uRes; uniform float uTime,uAspect,uTanHalf,uPitch,uNight,uAmbient,uHaze;
+uniform vec2 uRes; uniform float uTime,uAspect,uTanHalf,uPitch,uNight,uAmbient,uHaze,uMist;
 uniform sampler2D uM,uAO;
 uniform vec3 uHorizon,uLow,uMid,uTop,uGlow,uKey,uSunDir,uMoonDir;
 in vec2 vUv; out vec4 o;
@@ -97,6 +97,15 @@ vec3 skyGrad(float h){vec3 c=mix(uHorizon,uLow,smoothstep(0.,.16,h));c=mix(c,uMi
 float sunGlow(vec3 d){float mu=max(dot(d,uSunDir),0.);float nh=exp(-max(d.y,0.)*9.);
  return pow(mu,4.)*(.4+.6*nh)+pow(mu,28.)*1.4+pow(mu,380.)*2.+nh*(.3+.7*mu)*.45;}
 vec3 lin(vec3 c){return pow(c,vec3(2.2));}
+float mistPath(float dy,float dist){
+ float k=dy*dist*.028;
+ float shape=abs(k)<.001?1.-k*.5:(1.-exp(-k))/k;
+ return exp(-CAMH*.028)*dist*shape;
+}
+float cloudDensity(vec2 p,vec2 drift){
+ return fbm(p*vec2(.5,1.5)+drift+vec2(3.1,.4),5)*.75
+       +fbm(p*vec2(.22,2.6)+drift*.7+vec2(-1.3,5.),4)*.55;
+}
 void main(){
  vec2 nd=vUv*2.-1.;
  vec3 fw=vec3(0,sin(uPitch),cos(uPitch)),up=vec3(0,cos(uPitch),-sin(uPitch));
@@ -111,10 +120,15 @@ void main(){
  vec3 sky=mix(skyGrad(h),skyGrad(bh),.82)+uGlow*mix(g,gs,.7)*.55;
  if(rd.y>0.){
   vec2 dr=vec2(uTime*.006,uTime*.0015);
-  float body=fbm(plane*vec2(.5,1.5)+dr+vec2(3.1,.4),5),st=fbm(plane*vec2(.22,2.6)+dr*.7+vec2(-1.3,5.),4);
-  float cov=smoothstep(.3,.36,body*.75+st*.55)*smoothstep(.04,.2,h)*(1.-smoothstep(.5,.9,h));
-  vec3 lit=uHorizon*1.12+uGlow*.6+vec3(.25,.2,.1)*pow(mu,6.);
-  sky=mix(sky,lit,cov*.6);
+  float density=cloudDensity(plane,dr);
+  float cov=smoothstep(.3,.36,density)*smoothstep(.04,.2,h)*(1.-smoothstep(.5,.9,h));
+  vec2 sunward=uSunDir.xz/max(uSunDir.y+.07,.04)-plane;
+  sunward/=max(length(sunward),.001);
+  float edge=smoothstep(.002,.06,density-cloudDensity(plane+sunward*.12,dr));
+  float rim=edge*(1.-smoothstep(.36,.52,density));
+  vec3 shade=uMid*.65+uHorizon*.22,lit=uHorizon*1.08+uGlow*.45;
+  vec3 cloud=mix(shade,lit,edge*.7)+(uGlow+uHorizon*.12)*rim*(.5+pow(mu,6.)*1.6)*(1.-uNight);
+  sky=mix(sky,cloud,cov*.68);
   // stars
   vec2 sp=vec2(atan(rd.x,rd.z),rd.y)*vec2(90.,90.)*1.4; vec2 sc=floor(sp);
   float star=step(.992,hash12(sc))*smoothstep(.45,.0,length(fract(sp)-.5))*(.6+.4*sin(uTime*2.+hash12(sc+3.)*30.));
@@ -149,6 +163,9 @@ void main(){
    lit+=lin(uHorizon)*.08*pow(1.-n.y,3.)*0.;
    vec3 c=pow(lit/(1.+lit*.25),vec3(1./2.2));
    float fog=1.-exp(-t*uHaze); c=mix(c,mix(uHorizon,uLow,.2)*(1.-uNight*.4)+uGlow*.15*sunGlow(rd),fog);
+   float mist=1.-exp(-uMist*mistPath(rd.y,t));
+   vec3 mistColor=mix(uHorizon,uLow,.15)*mix(.95,.55,uNight)+uGlow*(.25+.35*pow(mu,7.));
+   c=mix(c,mistColor,mist*.92);
    col=c; region=(w.x+w.y+w.z>.5||t>140.)?.5:.9;
   }
  }
@@ -238,14 +255,14 @@ void main(){
 
 // ---- time of day: colour keyframes (display-space hex), phase 0..1 = night→dawn→noon→dusk→night
 const hex = s => { const v = parseInt(s.slice(1), 16); return [v >> 16 & 255, v >> 8 & 255, v & 255].map(x => x / 255); };
-const NIGHT = { horizon: '#2c416c', low: '#25375f', mid: '#1b2a50', top: '#111b38', glow: '#3b4f86', gs: 0, key: [.34, .5, .72], amb: .62, haze: 14e-5, night: 1 };
+const NIGHT = { horizon: '#2c416c', low: '#25375f', mid: '#1b2a50', top: '#111b38', glow: '#3b4f86', gs: 0, key: [.34, .5, .72], amb: .62, haze: 14e-5, mist: 7e-4, night: 1 };
 const KEYS = [{ p: 0, ...NIGHT },
-  { p: .06, horizon: '#e6998b', low: '#c98190', mid: '#9a83a8', top: '#7c85ab', glow: '#ff8a5c', gs: .42, key: [.95, .42, .26], amb: .82, haze: 19e-5, night: 0 },
-  { p: .14, horizon: '#f4b08a', low: '#e3a8a0', mid: '#b8a7bd', top: '#919abb', glow: '#ffa064', gs: .45, key: [1.35, .78, .46], amb: .9, haze: 16e-5, night: 0 },
-  { p: .3, horizon: '#f7e5c2', low: '#f3e8d4', mid: '#e1e4dc', top: '#bccfd9', glow: '#ffcf7c', gs: .26, key: [2.05, 1.62, 1.08], amb: 1, haze: 11e-5, night: 0 },
-  { p: .58, horizon: '#f4ead6', low: '#ebe8dc', mid: '#d6e0e0', top: '#aec7d7', glow: '#ffe0a0', gs: .2, key: [2.25, 1.92, 1.42], amb: 1.05, haze: 1e-4, night: 0 },
-  { p: .84, horizon: '#f8c47c', low: '#f2cd9c', mid: '#e2bfa4', top: '#b9b0b6', glow: '#ffb35a', gs: .5, key: [2.15, 1.3, .58], amb: .95, haze: 16e-5, night: 0 },
-  { p: .92, horizon: '#ef9070', low: '#c96f76', mid: '#b36871', top: '#5d5281', glow: '#ff7a4f', gs: .55, key: [1.05, .44, .3], amb: .74, haze: 18e-5, night: .15 },
+  { p: .06, horizon: '#e6998b', low: '#c98190', mid: '#9a83a8', top: '#7c85ab', glow: '#ff8a5c', gs: .42, key: [.95, .42, .26], amb: .82, haze: 19e-5, mist: .0012, night: 0 },
+  { p: .14, horizon: '#f4b08a', low: '#e3a8a0', mid: '#b8a7bd', top: '#919abb', glow: '#ffa064', gs: .45, key: [1.35, .78, .46], amb: .9, haze: 16e-5, mist: 7e-4, night: 0 },
+  { p: .3, horizon: '#f7e5c2', low: '#f3e8d4', mid: '#e1e4dc', top: '#bccfd9', glow: '#ffcf7c', gs: .26, key: [2.05, 1.62, 1.08], amb: 1, haze: 11e-5, mist: 15e-5, night: 0 },
+  { p: .58, horizon: '#f4ead6', low: '#ebe8dc', mid: '#d6e0e0', top: '#aec7d7', glow: '#ffe0a0', gs: .2, key: [2.25, 1.92, 1.42], amb: 1.05, haze: 1e-4, mist: 1e-4, night: 0 },
+  { p: .84, horizon: '#f8c47c', low: '#f2cd9c', mid: '#e2bfa4', top: '#b9b0b6', glow: '#ffb35a', gs: .5, key: [2.15, 1.3, .58], amb: .95, haze: 16e-5, mist: 3e-4, night: 0 },
+  { p: .92, horizon: '#ef9070', low: '#c96f76', mid: '#b36871', top: '#5d5281', glow: '#ff7a4f', gs: .55, key: [1.05, .44, .3], amb: .74, haze: 18e-5, mist: 8e-4, night: .15 },
   { p: 1, ...NIGHT }].map(k => ({ ...k, c: ['horizon', 'low', 'mid', 'top', 'glow'].map(n => hex(k[n])) }));
 const sm3 = x => x * x * (3 - 2 * x), mix = (a, b, t) => a + (b - a) * t, mixv = (a, b, t) => a.map((v, i) => mix(v, b[i], t));
 const rad = d => d * Math.PI / 180;
@@ -262,7 +279,7 @@ export function dayState(r) {
   const az = rad(mix(16.2, -4.6, r)), el = Math.min(rad(26.5), rad(-6) + rad(26.5) * Math.sin(Math.PI * r) ** .8);
   const dir = (az, el) => [Math.sin(az) * Math.cos(el), Math.sin(el), Math.cos(az) * Math.cos(el)];
   return { horizon, low, mid, top, glow: glow.map(v => v * gs), key: mixv(a.key, b.key, t).map(v => v * 1), amb: mix(a.amb, b.amb, t),
-    haze: mix(a.haze, b.haze, t), night, sunDir: dir(az, el), sunEl: el, moonDir: dir(rad(24), rad(-12 + 40 * night)) };
+    haze: mix(a.haze, b.haze, t), mist: mix(a.mist, b.mist, t), night, sunDir: dir(az, el), sunEl: el, moonDir: dir(rad(24), rad(-12 + 40 * night)) };
 }
 
 // ---- pointer smear: spring-less decay grid; pointer motion deposits displacement (64x40, RG)
@@ -327,7 +344,7 @@ export function createPainterlySky(canvas, opts = {}) {
   const ease = x => (1 - Math.cos(Math.PI * Math.min(1, Math.max(0, x)))) / 2;
   const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const fx = (P.particles !== false && !reduced) ? makeParticles(canvas, Math.min(devicePixelRatio || 1, 2)) : null;
-  const tone = P.toneTargets?.length ? makeTone(P.toneTargets) : null; let toneDirty = true;
+  const tone = P.toneTargets?.length ? makeTone(P.toneTargets) : null; let toneDirty = true, toneSampleAt = -Infinity;
   const mkT = () => { const t = tex(W, H, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR); return { t, f: fbo(t) }; };
   const resize = () => {
     const cw = canvas.clientWidth, ch = canvas.clientHeight;
@@ -353,7 +370,7 @@ export function createPainterlySky(canvas, opts = {}) {
     if (dirty) {
       let u = (gl.useProgram(pS.p), gl.bindFramebuffer(gl.FRAMEBUFFER, T.scene.f), gl.viewport(0, 0, W, H), pS.u);
       gl.uniform2f(u.uRes, W, H); gl.uniform1f(u.uTime, time); gl.uniform1f(u.uAspect, W / H); gl.uniform1f(u.uTanHalf, tanHalf); gl.uniform1f(u.uPitch, pitch);
-      gl.uniform1f(u.uNight, S.night); gl.uniform1f(u.uAmbient, S.amb); gl.uniform1f(u.uHaze, S.haze); gl.uniform2f(u.uBake, BW, BH);
+      gl.uniform1f(u.uNight, S.night); gl.uniform1f(u.uAmbient, S.amb); gl.uniform1f(u.uHaze, S.haze); gl.uniform1f(u.uMist, S.mist); gl.uniform2f(u.uBake, BW, BH);
       gl.uniform3fv(u.uHorizon, S.horizon); gl.uniform3fv(u.uLow, S.low); gl.uniform3fv(u.uMid, S.mid); gl.uniform3fv(u.uTop, S.top);
       gl.uniform3fv(u.uGlow, S.glow); gl.uniform3fv(u.uKey, S.key); gl.uniform3fv(u.uSunDir, S.sunDir); gl.uniform3fv(u.uMoonDir, S.moonDir);
       bind(u, 0, hTex, 'uH'); bind(u, 1, mTex, 'uM'); bind(u, 2, horizonTex, 'uHorizons'); bind(u, 3, aoTex, 'uAO');
@@ -378,9 +395,10 @@ export function createPainterlySky(canvas, opts = {}) {
     gl.uniform1f(u.uSunR, Math.tan(.043) / tanHalf * H / 2); gl.uniform1f(u.uNight, S.night);
     gl.uniform4fv(u.uShadowWeights, shadowWeights(Math.atan2(S.sunDir[0], S.sunDir[2])));
     gl.uniform3fv(u.uSunDir, S.sunDir); gl.uniform3fv(u.uGlowCol, S.glow); draw();
-    if (tone && toneDirty && !busy) { tone.update(gl, canvas, W, H, dpr); toneDirty = false; }
+    if (tone && toneDirty && (!busy || now-toneSampleAt >= 400)) { tone.update(gl, canvas, W, H, dpr); toneDirty = false; toneSampleAt = now; }
+    const toneBusy = tone?.ease(reduced ? Infinity : dt, now);
     if (fx) fx.step(dt, [mouse.x, canvas.clientHeight - mouse.y], mouse.active ? 1 : 0, 1);
-    if (busy || fx || !smear.settled) raf = requestAnimationFrame(render);
+    if (busy || fx || !smear.settled || toneBusy) raf = requestAnimationFrame(render);
   };
   const kick = () => { if (!raf) raf = requestAnimationFrame(render); };
   const rel = e => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
@@ -434,16 +452,37 @@ function makeParticles(host, dpr) {
 // ---- text tone: sample rendered pixels under each element, flip data-tone light/dark for contrast ----
 function makeTone(els) {
   const lin = v => { v /= 255; return v <= .04045 ? v/12.92 : ((v+.055)/1.055)**2.4; };
+  const groups = els.map(el => ({ el, tone: null, dark: 1, bright: 0, halo: 0, changedAt: -Infinity }));
   return { update(gl, canvas, W, H, dpr) {
     const cr = canvas.getBoundingClientRect();
-    for (const el of els) { const r = el.getBoundingClientRect();
+    for (const group of groups) { const { el } = group, r = el.getBoundingClientRect();
       const x0 = Math.max(0, Math.floor((r.left-cr.left)*dpr)), x1 = Math.min(W, Math.ceil((r.right-cr.left)*dpr));
       const y0 = Math.max(0, Math.floor(H-(r.bottom-cr.top)*dpr)), y1 = Math.min(H, Math.ceil(H-(r.top-cr.top)*dpr));
       const w = x1-x0, h = y1-y0; if (w < 2 || h < 2) continue;
       const buf = new Uint8Array(w*h*4); gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.readPixels(x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
       const L = []; for (let i = 0; i < buf.length; i += 16) L.push(.2126*lin(buf[i])+.7152*lin(buf[i+1])+.0722*lin(buf[i+2]));
-      L.sort((a, b) => a-b); const dark = L[Math.floor(L.length*.06)], bright = L[Math.floor(L.length*.94)];
-      // WCAG contrast of black-ish text vs worst(darkest) bg, white text vs brightest bg
-      const cDark = (dark+.05)/.0568, cLight = .85/(bright+.05);
-      el.dataset.tone = cDark >= cLight ? 'light' : 'dark'; } } };
+      L.sort((a, b) => a-b); group.dark = L[Math.floor(L.length*.06)]; group.bright = L[Math.floor(L.length*.94)];
+      const style = getComputedStyle(el), size = parseFloat(style.fontSize);
+      group.contrast = size >= 24 || (size >= 18.66 && parseInt(style.fontWeight) >= 700) ? 3 : 4.5;
+    }
+  }, ease(dt, now) {
+    let busy = false;
+    for (const group of groups) { const { el, dark, bright, contrast } = group; if (!contrast) continue;
+      // Compare each tone against its worst sampled background; wait before reversing a decision.
+      const cDark = (dark+.05)/.0568, cLight = .85/(bright+.05), candidate = cDark >= cLight ? 'light' : 'dark';
+      const ratio = Math.max(cDark, cLight)/Math.min(cDark, cLight);
+      if (!group.tone || (candidate !== group.tone && ratio > 1.12 && now-group.changedAt >= 2500)) {
+        group.tone = el.dataset.tone = candidate; group.changedAt = now;
+      }
+      if (candidate !== group.tone && ratio > 1.12) busy = true;
+      const deficit = group.tone === 'light'
+        ? (contrast*.0568-.05-dark)/Math.max(.84-dark,.001)
+        : (bright-(.85/contrast-.05))/Math.max(bright-.0068,.001);
+      const target = Math.min(1, Math.max(0, deficit/.26));
+      group.halo += (target-group.halo)*(1-Math.exp(-dt/.5));
+      if (Math.abs(target-group.halo) > .001) busy = true; else group.halo = target;
+      el.style.setProperty('--halo', group.halo.toFixed(3));
+    }
+    return busy;
+  } };
 }
