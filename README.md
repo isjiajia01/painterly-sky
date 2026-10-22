@@ -6,7 +6,7 @@ Procedural, painted-looking gradient backgrounds in ~200 lines of WebGL2. Zero d
     createPainterlySky(canvas, {...SUNRISE, sun:[.5,.4], top:[.2,.3,.6]})
 
 How it works: scene (banded fbm-wobbled gradient) → flow (structure tensor) → anisotropic Kuwahara → jittered brush dabs lit as a height field (normal + specular + canvas grain + dither). Static layers render once; only the last pass re-runs on pointer move.
-Inspired by the technique observed on ardia.dev; all code here is original. MIT.
+
 
 ## Features
 - Banded, fbm-wobbled sky gradient + stepped sun glow, hills, grass
@@ -20,3 +20,8 @@ Also: raymarched heightfield terrain with baked horizon/AO, 30k wind-blown grass
 
 ## Time of day
 By default the scene follows the visitor's **local clock** (`timeOfDay: 'auto'`, refreshed every 30 s). Pass a number 0..1 to pin it (e.g. `0.2` dawn, `0.5` noon, `0.9` dusk), or `cycle: seconds` for a looping day. In the demo page use `?t=0.9`.
+
+## Attribution & license
+Derived from the hero "meadow" scene of [Ardia](https://github.com/mantrakp04/ardia) (© 2026 Mantra Patel, Apache-2.0).
+Pipeline structure, colour keyframes and many constants follow the original source; this repo re-implements and
+simplifies it as a standalone module. Licensed under **Apache License 2.0** (see `LICENSE`, `NOTICE`).

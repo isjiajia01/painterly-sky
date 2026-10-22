@@ -1,0 +1,8 @@
+painterly-sky
+Derived from the "meadow" hero scene of Ardia (https://github.com/mantrakp04/ardia),
+Copyright 2026 Mantra Patel, licensed under the Apache License, Version 2.0.
+
+This project is a re-implementation/adaptation in a single dependency-free JavaScript file.
+Changes: rewritten as a standalone module, simplified (raymarched terrain instead of mesh,
+reduced grass/particle systems), local-clock time of day, and other modifications.
+Constants, colour keyframes and the rendering pipeline structure follow the original.
