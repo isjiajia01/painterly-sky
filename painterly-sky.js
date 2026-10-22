@@ -1,6 +1,7 @@
 // painterly-sky — procedural painted landscape background (WebGL2, zero deps).
 // Pipeline (same architecture as ardia.dev's hero, re-implemented from scratch):
 //   bake    : terrain height + material weights baked once into a (x, log z) map
+//   horizon : sunward elevation angles + ambient occlusion baked from height
 //   scene   : sky (banded gradient, sun/moon, clouds, stars) + heightfield raymarch
 //             with soft sun shadows and aerial haze; alpha = region id
 //   flow    : structure tensor of the scene -> stroke orientation / coherence
@@ -17,7 +18,7 @@ float vnoise(vec2 x){vec2 c=floor(x),f=fract(x),u=f*f*f*(f*(f*6.-15.)+10.);
 const mat2 TURN=mat2(.8,-.6,.6,.8);
 float fbm(vec2 p,int o){float s=0.,a=.5;for(int i=0;i<o;i++){s+=a*vnoise(p);p=TURN*p*2.03+vec2(4.1,1.7);a*=.5;}return s;}
 // terrain domain: u across (width grows with depth), v = log(depth)
-const float TZN=1.,TZF=16000.,TW0=6.,TSLOPE=1.05,HMIN=-60.,HRANGE=2300.;
+const float TZN=1.,TZF=16000.,TW0=6.,TSLOPE=1.05,HMIN=-60.,HRANGE=2300.,CAMH=16.;
 vec2 terrainWorld(vec2 uv){float z=TZN*pow(TZF/TZN,uv.y);return vec2((uv.x*2.-1.)*(TW0+z*TSLOPE),z);}
 vec2 terrainUv(vec2 p){float z=max(p.y,TZN);return vec2(p.x/(TW0+z*TSLOPE)*.5+.5,log(z/TZN)/log(TZF/TZN));}
 `;
@@ -51,22 +52,50 @@ float terrain(vec2 p,out vec3 w){
 void main(){vec2 p=terrainWorld(gl_FragCoord.xy/uBake); vec3 w; float h=terrain(p,w);
  float pk=floor(clamp((h-HMIN)/HRANGE,0.,1.)*65535.),hi=floor(pk/256.);
  oH=vec4(hi/255.,(pk-hi*256.)/255.,0,1); oM=vec4(w,1);}`;
-const SCENE = COMMON + `
-uniform vec2 uRes; uniform float uTime,uAspect,uTanHalf,uPitch,uNight,uAmbient,uHaze;
-uniform sampler2D uH,uM; uniform vec2 uBake;
-uniform vec3 uHorizon,uLow,uMid,uTop,uGlow,uKey,uSunDir,uMoonDir;
-in vec2 vUv; out vec4 o;
-const float BANDS=7.,CAMH=1.7;
+// Decode before interpolation: the two packed height bytes must not be filtered.
+const HEIGHT = `
+uniform sampler2D uH; uniform vec2 uBake;
 float dec(vec4 t){return (t.r*65280.+t.g*255.)/65535.*HRANGE+HMIN;}
 float hAt(vec2 p){vec2 uv=clamp(terrainUv(p),0.,1.);vec2 st=uv*uBake-.5;ivec2 b=ivec2(floor(st)),mx=ivec2(uBake)-1;vec2 f=fract(st);
  float a=dec(texelFetch(uH,clamp(b,ivec2(0),mx),0)),bb=dec(texelFetch(uH,clamp(b+ivec2(1,0),ivec2(0),mx),0));
  float c=dec(texelFetch(uH,clamp(b+ivec2(0,1),ivec2(0),mx),0)),d=dec(texelFetch(uH,clamp(b+ivec2(1,1),ivec2(0),mx),0));
  return mix(mix(a,bb,f.x),mix(c,d,f.x),f.y);}
+`;
+const HORIZON = `
+uniform sampler2D uHorizons; uniform vec4 uShadowWeights;
+float horizonAngle(vec4 h){return dot(h,uShadowWeights)*1.1-.25;}
+float sunVisibility(vec4 h,vec3 light){return smoothstep(-.025,.035,asin(clamp(light.y,-1.,1.))-horizonAngle(h));}
+`;
+const AUX = COMMON + HEIGHT + `
+uniform bool uObserver;
+layout(location=0) out vec4 oHorizons; layout(location=1) out vec4 oAO;
+float horizon(vec2 p,float eye,float az){
+ vec2 dir=vec2(sin(az),cos(az));float slope=-.25,dist=max(.8,p.y*.004);
+ for(int i=0;i<56;i++){
+  vec2 q=p+dir*dist,uv=terrainUv(q);
+  if(q.y>=TZN&&q.y<=TZF&&uv.x>=0.&&uv.x<=1.)slope=max(slope,(hAt(q)-eye)/dist);
+  dist*=1.23;if(dist>TZF*2.)break;}
+ return clamp((atan(slope)+.25)/1.1,0.,1.);}
+void main(){
+ vec2 p=uObserver?vec2(0):terrainWorld(gl_FragCoord.xy/uBake);
+ float h=hAt(p),eye=uObserver?CAMH:h+.35+p.y*.001;
+ oHorizons=vec4(horizon(p,eye,-.10472),horizon(p,eye,.069813),horizon(p,eye,.244346),horizon(p,eye,.418879));
+ float occ=0.,radius=1.5+p.y*.012;
+ if(!uObserver)for(int i=0;i<8;i++){
+  float a=float(i)*PI*.25;vec2 d=vec2(cos(a),sin(a));
+  occ+=max(0.,atan((hAt(p+d*radius)-h)/radius));
+  occ+=max(0.,atan((hAt(p+d*radius*4.)-h)/(radius*4.)));}
+ oAO=vec4(vec3(clamp(1.-occ*.14,.15,1.)),1);
+}`;
+const SCENE = COMMON + HEIGHT + HORIZON + `
+uniform vec2 uRes; uniform float uTime,uAspect,uTanHalf,uPitch,uNight,uAmbient,uHaze;
+uniform sampler2D uM,uAO;
+uniform vec3 uHorizon,uLow,uMid,uTop,uGlow,uKey,uSunDir,uMoonDir;
+in vec2 vUv; out vec4 o;
+const float BANDS=7.;
 vec3 skyGrad(float h){vec3 c=mix(uHorizon,uLow,smoothstep(0.,.16,h));c=mix(c,uMid,smoothstep(.12,.55,h));return mix(c,uTop,smoothstep(.5,1.,h));}
 float sunGlow(vec3 d){float mu=max(dot(d,uSunDir),0.);float nh=exp(-max(d.y,0.)*9.);
  return pow(mu,4.)*(.4+.6*nh)+pow(mu,28.)*1.4+pow(mu,380.)*2.+nh*(.3+.7*mu)*.45;}
-float shadowAt(vec3 P,vec3 L){if(L.y<-.02)return 0.;float s=1.,t=2.+hash12(P.xz*7.)*1.5;
- for(int i=0;i<22;i++){vec3 q=P+L*t;s=min(s,8.*(q.y-hAt(q.xz))/t);t*=1.4;}return smoothstep(0.,.6,s);}
 vec3 lin(vec3 c){return pow(c,vec3(2.2));}
 void main(){
  vec2 nd=vUv*2.-1.;
@@ -112,10 +141,11 @@ void main(){
    vec3 alb=meadow; alb=mix(alb,vec3(.07,.24,.20)*(.8+.4*nz),w.x); alb=mix(alb,vec3(.62,.62,.42)*(.85+.3*nz2),w.y); alb=mix(alb,vec3(.40,.50,.60),w.z);
    alb=lin(alb);
    vec3 Ld=normalize(mix(uSunDir,uMoonDir,smoothstep(.4,.7,uNight)));
-   float sh=shadowAt(P+n*.3,Ld);
+   vec2 uv=clamp(terrainUv(P.xz),0.,1.);
+   float sh=sunVisibility(texture(uHorizons,uv),Ld),ao=texture(uAO,uv).r;
    float lam=max(dot(n,Ld),0.)*.9+.1;
    vec3 amb=lin(uMid)*.9+lin(uHorizon)*.35*(1.-n.y*.5);
-   vec3 lit=alb*(amb*.8*uAmbient*mix(1.,.7,uNight)+uKey*.5*lam*sh);
+   vec3 lit=alb*(amb*ao*.8*uAmbient*mix(1.,.7,uNight)+uKey*.5*lam*sh);
    lit+=lin(uHorizon)*.08*pow(1.-n.y,3.)*0.;
    vec3 c=pow(lit/(1.+lit*.25),vec3(1./2.2));
    float fog=1.-exp(-t*uHaze); c=mix(c,mix(uHorizon,uLow,.2)*(1.-uNight*.4)+uGlow*.15*sunGlow(rd),fog);
@@ -165,8 +195,8 @@ void main(){
  vec3 c=acc/ks; float lv=mix(26.,18.,step(f.a,.25)); c=mix(c,floor(c*lv+.5)/lv,.35);
  o=vec4(c,1);
 }`;
-const DABS = COMMON + `
-uniform sampler2D uPaint,uFlow,uSmear; uniform vec2 uRes,uSunPx,uMoonPx; uniform float uDpr,uRelief,uTime,uSunR,uNight,uSunVis;
+const DABS = COMMON + HORIZON + `
+uniform sampler2D uPaint,uFlow,uSmear; uniform vec2 uRes,uSunPx,uMoonPx; uniform float uDpr,uRelief,uTime,uSunR,uNight; uniform vec3 uSunDir;
 uniform vec3 uLight,uSpec,uGlowCol; in vec2 vUv; out vec4 o;
 vec2 hash22(vec2 p){return vec2(hash12(p),hash12(p+19.19));}
 void main(){
@@ -197,9 +227,10 @@ void main(){
  float df=dot(n,uLight)-uLight.z; vec3 hw2=normalize(uLight+vec3(0,0,1));
  float sp=max(pow(max(dot(n,hw2),0.),18.)-pow(hw2.z,18.),0.);
  col=col*(1.+df*.6)*(1.+gr*.03)+uSpec*sp*mix(.1,.22,br);
+ float sunVis=sunVisibility(texelFetch(uHorizons,ivec2(0),0),uSunDir);
  float sd=length(px-uSunPx);
  float gl=exp(-max(sd-uSunR,0.)/(uSunR*.8))*.4+exp(-sd/(uSunR*5.))*.14;
- col+=pow(uGlowCol*1.4+vec3(.035,.018,0.),vec3(1./2.2))*gl*.5*uSunVis*(1.-uNight);
+ col+=pow(uGlowCol*1.4+vec3(.035,.018,0.),vec3(1./2.2))*gl*.5*sunVis*(1.-uNight);
  float md=length(px-uMoonPx); col+=vec3(.55,.62,.8)*exp(-max(md-uSunR*.8,0.)/(uSunR*1.4))*.3*uNight;
  col+=(hash12(px+fract(uTime*3.7)*97.)-.5)/255.;
  o=vec4(col,1);
@@ -218,6 +249,11 @@ const KEYS = [{ p: 0, ...NIGHT },
   { p: 1, ...NIGHT }].map(k => ({ ...k, c: ['horizon', 'low', 'mid', 'top', 'glow'].map(n => hex(k[n])) }));
 const sm3 = x => x * x * (3 - 2 * x), mix = (a, b, t) => a + (b - a) * t, mixv = (a, b, t) => a.map((v, i) => mix(v, b[i], t));
 const rad = d => d * Math.PI / 180;
+// Four baked horizon channels cover -6 to 24 degrees in ten-degree intervals.
+const shadowWeights = az => {
+  const segment = Math.min(3, Math.max(0, (az - rad(-6)) / rad(10))), k = Math.min(2, Math.floor(segment)), w = [0, 0, 0, 0];
+  w[k] = 1 - (segment - k); w[k + 1] = segment - k; return w;
+};
 export function dayState(r) {
   r = Math.min(1, Math.max(0, r)); let i = 0; while (i < KEYS.length - 2 && KEYS[i + 1].p <= r) i++;
   const a = KEYS[i], b = KEYS[i + 1], t = sm3((r - a.p) / (b.p - a.p));
@@ -260,7 +296,7 @@ export function createPainterlySky(canvas, opts = {}) {
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
     const u = {}; for (let i = 0, n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS); i < n; i++) {
       const nm = gl.getActiveUniform(p, i).name; u[nm] = gl.getUniformLocation(p, nm); } return { p, u }; };
-  const pB = prog(BAKE), pS = prog(SCENE), pF = prog(FLOW), pK = prog(KUWA), pD = prog(DABS);
+  const pB = prog(BAKE), pA = prog(AUX), pS = prog(SCENE), pF = prog(FLOW), pK = prog(KUWA), pD = prog(DABS);
   gl.bindVertexArray(gl.createVertexArray());
   const tex = (w, h, ifmt, fmt, type, filter) => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
     gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, w, h, 0, fmt, type, null);
@@ -276,6 +312,12 @@ export function createPainterlySky(canvas, opts = {}) {
   const BW = 512, BH = 1024;
   const hTex = tex(BW, BH, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST), mTex = tex(BW, BH, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR);
   { const f = fbo(hTex, mTex); gl.useProgram(pB.p); gl.viewport(0, 0, BW, BH); gl.uniform2f(pB.u.uBake, BW, BH); draw(); gl.deleteFramebuffer(f); }
+
+  const horizonTex = tex(BW, BH, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR), aoTex = tex(BW, BH, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR);
+  const cameraHorizonTex = tex(1, 1, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST);
+  { const f = fbo(horizonTex, aoTex); gl.useProgram(pA.p); bind(pA.u, 0, hTex, 'uH'); gl.uniform2f(pA.u.uBake, BW, BH); draw(); gl.deleteFramebuffer(f);
+    // The observer sits above the ground; bake its actual horizon separately.
+    const c = fbo(cameraHorizonTex); gl.viewport(0, 0, 1, 1); gl.uniform1i(pA.u.uObserver, 1); draw(); gl.deleteFramebuffer(c); }
 
   // pointer-smear texture
   const smear = new Smear(); const smTex = tex(smear.c, smear.r, gl.RG16F, gl.RG, gl.HALF_FLOAT, gl.LINEAR);
@@ -297,7 +339,7 @@ export function createPainterlySky(canvas, opts = {}) {
   const phaseAt = now => {
     const target = P.timeOfDay, e = introMs ? ease((now - t0 - 300) / introMs) : 1;
     let r = target * e; if (P.cycle) r = (target + Math.max(0, now - t0 - introMs) / 1000 / P.cycle) % 1; return { r, busy: e < 1 || !!P.cycle }; };
-  const fov = rad(62), tanHalf = Math.tan(fov / 2), pitch = Math.atan(.4 * tanHalf);
+  const fov = rad(54), tanHalf = Math.tan(fov / 2), pitch = Math.atan(.4 * tanHalf);
   const project = d => { // direction -> css px (origin top-left) in canvas space
     const fw = [0, Math.sin(pitch), Math.cos(pitch)], up = [0, Math.cos(pitch), -Math.sin(pitch)];
     const z = d[0] * 0 + d[1] * fw[1] + d[2] * fw[2], x = d[0], y = d[1] * up[1] + d[2] * up[2];
@@ -314,7 +356,9 @@ export function createPainterlySky(canvas, opts = {}) {
       gl.uniform1f(u.uNight, S.night); gl.uniform1f(u.uAmbient, S.amb); gl.uniform1f(u.uHaze, S.haze); gl.uniform2f(u.uBake, BW, BH);
       gl.uniform3fv(u.uHorizon, S.horizon); gl.uniform3fv(u.uLow, S.low); gl.uniform3fv(u.uMid, S.mid); gl.uniform3fv(u.uTop, S.top);
       gl.uniform3fv(u.uGlow, S.glow); gl.uniform3fv(u.uKey, S.key); gl.uniform3fv(u.uSunDir, S.sunDir); gl.uniform3fv(u.uMoonDir, S.moonDir);
-      bind(u, 0, hTex, 'uH'); bind(u, 1, mTex, 'uM'); draw();
+      bind(u, 0, hTex, 'uH'); bind(u, 1, mTex, 'uM'); bind(u, 2, horizonTex, 'uHorizons'); bind(u, 3, aoTex, 'uAO');
+      const az = Math.atan2(S.sunDir[0], S.sunDir[2]), moon = sm3(Math.min(1, Math.max(0, (S.night - .4) / .3)));
+      gl.uniform4fv(u.uShadowWeights, shadowWeights(mix(az, rad(24), moon))); draw();
       gl.useProgram(pF.p); gl.bindFramebuffer(gl.FRAMEBUFFER, T.flow.f); u = pF.u; bind(u, 0, T.scene.t, 'uScene'); gl.uniform2f(u.uTexel, 1 / W, 1 / H); draw();
       gl.useProgram(pK.p); gl.bindFramebuffer(gl.FRAMEBUFFER, T.paint.f); u = pK.u; bind(u, 0, T.scene.t, 'uScene'); bind(u, 1, T.flow.t, 'uFlow');
       gl.uniform2f(u.uTexel, 1 / W, 1 / H); gl.uniform1f(u.uRadius, 5 * dpr); draw(); dirty = false;
@@ -323,7 +367,7 @@ export function createPainterlySky(canvas, opts = {}) {
     smear.step(dt, mouse, W / dpr, H / dpr, 90);
     gl.bindTexture(gl.TEXTURE_2D, smTex); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, smear.c, smear.r, gl.RG, gl.FLOAT, smear.field);
     gl.useProgram(pD.p); gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, W, H); const u = pD.u;
-    bind(u, 0, T.paint.t, 'uPaint'); bind(u, 1, T.flow.t, 'uFlow'); bind(u, 2, smTex, 'uSmear');
+    bind(u, 0, T.paint.t, 'uPaint'); bind(u, 1, T.flow.t, 'uFlow'); bind(u, 2, smTex, 'uSmear'); bind(u, 3, cameraHorizonTex, 'uHorizons');
     // relief light: from the screen centre towards the sun (day) or moon (night), as on ardia.dev
     const nb = sm3(Math.min(1, Math.max(0, (S.night - .35) / .3))), ang = p => Math.atan2(H / 2 - p[1], p[0] - W / 2);
     const a0 = ang(sunPx), a1 = a0 + Math.atan2(Math.sin(ang(moonPx) - a0), Math.cos(ang(moonPx) - a0)) * nb;
@@ -332,7 +376,8 @@ export function createPainterlySky(canvas, opts = {}) {
     gl.uniform3f(u.uSpec, mix(1, .45, nb), mix(.9, .55, nb), mix(.72, .75, nb));
     gl.uniform2f(u.uSunPx, sunPx[0], H - sunPx[1]); gl.uniform2f(u.uMoonPx, moonPx[0], H - moonPx[1]);
     gl.uniform1f(u.uSunR, Math.tan(.043) / tanHalf * H / 2); gl.uniform1f(u.uNight, S.night);
-    gl.uniform1f(u.uSunVis, sm3(Math.min(1, Math.max(0, (S.sunEl + .03) / .09)))); gl.uniform3fv(u.uGlowCol, S.glow); draw();
+    gl.uniform4fv(u.uShadowWeights, shadowWeights(Math.atan2(S.sunDir[0], S.sunDir[2])));
+    gl.uniform3fv(u.uSunDir, S.sunDir); gl.uniform3fv(u.uGlowCol, S.glow); draw();
     if (tone && toneDirty && !busy) { tone.update(gl, canvas, W, H, dpr); toneDirty = false; }
     if (fx) fx.step(dt, [mouse.x, canvas.clientHeight - mouse.y], mouse.active ? 1 : 0, 1);
     if (busy || fx || !smear.settled) raf = requestAnimationFrame(render);
