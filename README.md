@@ -16,4 +16,4 @@ Inspired by the technique observed on ardia.dev; all code here is original. MIT.
 - Auto text contrast: `toneTargets:[el,...]` sets `data-tone="light|dark"` from the pixels under each element
 - Options: `sunrise:false`, `particles:false`; honours `prefers-reduced-motion`
 
-Not (yet) included: the original's 3D terrain/shadow-horizon lighting and day/night cycle.
+Also: 3D heightfield terrain (baked + raymarched, soft sun shadows), 24h day/night cycle (`timeOfDay`, `cycle` seconds), moon/stars, pointer-smear texture.

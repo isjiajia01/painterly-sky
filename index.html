@@ -8,4 +8,4 @@ p{font:500 1.4rem/1.4 system-ui;max-width:30ch;margin:2rem 0;transition:color .6
 </style>
 <canvas id=c></canvas><main><h1 id=t>TOUCH<br>GRASS.</h1><p id=l>Procedural painted gradients in WebGL2. Click anywhere. Move the mouse.</p></main>
 <script type=module>import {createPainterlySky} from './painterly-sky.js';
-createPainterlySky(document.getElementById('c'),{toneTargets:[t,l], sunrise: !location.search.includes('still'), particles: !location.search.includes('still')});</script>
+createPainterlySky(document.getElementById('c'),{toneTargets:[t,l], sunrise: !location.search.includes('still'), particles: !location.search.includes('still'), timeOfDay: +(new URLSearchParams(location.search).get('t')||.2)});</script>
